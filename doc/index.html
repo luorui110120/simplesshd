@@ -2,7 +2,13 @@
 <meta name="HandheldFriendly" content="true"/>
 <style type="text/css">
 pre {
-        margin-left: 1em;
+	margin-left: 1em;
+	white-space: pre-wrap;
+	word-wrap: break-word;
+}
+tt {
+	white-space: pre-wrap;
+	word-wrap: break-word;
 }
 </style>
 </head>
@@ -15,11 +21,6 @@ sftp, and rsync.  It only supports public-key based authentication (no
 password/interactive auth except for bootstrapping).  It does not use
 root, which means it must listen on a port over 1024 (defaults to port
 2222).</p>
-
-<p><b>SimpleSSHD version 20 was released 2019/06/16 and features
-significant changes -- a new version of Dropbear 2019.78 and a new
-version of the Android SDK.  If you are having troubles with the upgrade,
-please email me!</b></p>
 
 <h2>Quick start</h2>
 
@@ -34,8 +35,15 @@ Port 2222
 </pre>
 <li> Launch SimpleSSHD, and in Settings enable "Start on Boot", then
 manually start it for the first time.
-<li> Create <tt>authorized_keys</tt> in the home directory (do not use <tt>ssh-copy-id</tt>)
-<li> Optionally make <tt>.profile</tt>
+<li> Create <tt>authorized_keys</tt> in the home directory
+(do not use <tt>ssh-copy-id</tt>).
+<li> Optionally run <tt>restorecon -F authorized_keys</tt> (LineageOS
+needs it for "SELinux context").
+<li> Optionally make <tt>.profile</tt>.
+<li> Visit <a href="https://dontkillmyapp.com/">dontkillmyapp.com</a> to
+fix vendor-specific (OnePlus, etc) hacks that break background apps like
+SimpleSSHD.  This website will help you out if SimpleSSHD won't run in
+the background, or won't start after boot, or so on.
 </ul>
 
 <p>If SimpleSSHD does not find an <tt>authorized_keys</tt> file when a
@@ -61,6 +69,7 @@ disappear if you uninstall SimpleSSHD.</p>
 
 <p>Once you get setup, you may want BusyBox.  Check out
 <a href="https://play.google.com/store/apps/details?id=org.galexander.busybox">SimpleBusyBox</a>.</p>
+
 
 <h2>Settings</h2>
 
@@ -92,7 +101,7 @@ greater than 1024 (because SimpleSSHD does not have root).</dd>
 
 <dt>Buffer hack for rsync+SuperSU</dt>
 <dd>A bug in SuperSU interacts with an infelicity in rsync to cause an
-occasional deadlock.  This is a real pain because I use SuperSU+rsync 
+occasional deadlock.  This is a real pain because I use SuperSU+rsync
 for system-wide backups, which will always eventually trigger the
 deadlock.  To work around this, there is a "Buffer hack" option that
 should be enabled if you use rsync with SuperSU.  It adds a miniscule
@@ -111,7 +120,7 @@ commandline.</dd>
 shell.  There is one variable per line, with a
 "<em>name</em><tt>=</tt><em>value</em>" format.
 A common use would be
-"<tt>ENV=>/data/data/org.galexander.sshd/files/.profile</tt>",
+"<tt>ENV=/data/data/org.galexander.sshd/files/.profile</tt>",
 if your device has a
 build of <tt>mksh</tt> that does not execute a <tt>.profile</tt>
 automatically.</dd>
@@ -145,6 +154,39 @@ login shell would be invoked as "<tt>-sh</tt>", but su will be invoked as
 "<tt>su -</tt>".</dd>
 
 
+<h2>Broadcast intents</h2>
+
+<p>SimpleSSHD registers receivers for broadcasts that you can use to
+start/stop the service programmatically, using an app like Tasker, or the
+commandline tool <tt>am</tt>.</p>
+
+<p>action: <tt>org.galexander.sshd.START</tt><br>
+&nbsp;&nbsp;or: <tt>org.galexander.sshd.STOP</tt><br>
+app: <tt>org.galexander.sshd</tt><br>
+category: <tt>android.intent.category.DEFAULT</tt> (optional).</p>
+
+<p>Note that these intents will only work on phones with Android 8 (Oreo)
+or later if <b>Settings</b> -> <b>Foreground Service</b> is enabled.</p>
+
+<p>For example, to start sshd service under shell, you could run:
+<pre>am broadcast -a org.galexander.sshd.START org.galexander.sshd</pre></p>
+
+<p>You may need to specify <tt>--user 0</tt> depending on the context:
+<pre>am broadcast --user 0 -a org.galexander.sshd.START org.galexander.sshd</pre></p>
+
+<p>And if Android is ignoring your broadcasts because the app was never started yet (or was force stopped), you may try (it's all arbitrary to me!):
+<pre>am broadcast --user 0 -a org.galexander.sshd.START org.galexander.sshd/.StartReceiver</pre></p>
+
+
+<p>If you are getting an error from <tt>am</tt> like:
+<pre>cmd: Failure calling service activity: Failed transaction (2147483646)</pre>
+it can probably be solved by disassociating <tt>am</tt> from the ssh
+terminal (I don't know why).  This can be accomplished by redirecting
+stdin, stdout, and stderr.  For example, I can actually stop sshd from
+within an ssh session using this command:
+<pre>am broadcast --user 0 -a org.galexander.sshd.STOP org.galexander.sshd < /dev/null > /dev/null 2> /dev/null</pre></p>
+
+
 <h2>Frequently Asked Questions</h2>
 
 <p>Here are some common complaints:</p>
@@ -155,6 +197,12 @@ vary.  Modern Android (since about Kit Kat) only allows write access to
 an SD card through the Android Java API, but shell commands usually use
 Unix APIs (POSIX, C).  I don't know a work-around.  Most phones let you
 write to <tt>/sdcard</tt>, but it's often in the phone's internal memory.
+
+<li>If you installed an <tt>authorized_keys</tt> file, but SimpleSSHD
+acts like it doesn't exist, try running "<tt>restorecon -F
+authorized_keys</tt>".  Some Android configurations, such as LineageOS,
+run apps in an "SELinux Context" (don't ask me) where that kind of thing
+is necessary.
 
 <li> <tt>rsync</tt> will do too much work for an update, because there is
 usually no way to update the ctime, mtime, or atime on files in
@@ -172,9 +220,6 @@ harmless.
 <b>Port Number</b> to 22 (which will fail and be ignored), and then add
 <tt>-p 192.168.1.123:2222</tt> to <b>Extra Commandline</b>.
 
-<li> <tt>ed25519</tt> keys are not supported by Dropbear (yet).  Use a
-regular <tt>rsa</tt> key for greatest compatibility.
-
 <li> Do not use <tt>ssh-copy-id</tt>, it will try to put the
 <tt>authorized_keys</tt> file in the wrong place.
 
@@ -184,6 +229,13 @@ regular <tt>rsa</tt> key for greatest compatibility.
 <h2>Change Log</h2>
 
 <ul>
+<li> <b>2021/01/17 Version 27:</b> New approach to accessing /sdcard.  Automatically re-start on package upgrade if Start on Boot enabled.  Fix "Non-matching signing type" error with older ssh clients.
+<li> <b>2020/12/29 Version 26:</b> Fix ed25519 host key creation.
+<li> <b>2020/12/29 Version 25:</b> Fix compatibility with WinSCP.  Update to upstream Dropbear 2020.81 -- adding ed25519 support!
+<li> <b>2020/01/01 Version 24:</b> Fix crash with "Start on Open" on Android 9. New TV icon.  Improve performance.
+<li> <b>2019/09/21 Version 23:</b> Support Android TV.
+<li> <b>2019/09/01 Version 22:</b> Add broadcast intents for start and stop.
+<li> <b>2019/08/11 Version 21:</b> Fix restarting after a crash.  Fix SIGSEGV on some Android 9 devices.
 <li> <b>2019/06/16 Version 20:</b> Update SDK.  Support x86_64, arm64.
 Fix finding support libraries.  Fix colors again.  Fix start-on-boot on
 new Android.  Update to dropbear 2019.78.
@@ -219,6 +271,7 @@ buffer size to 1MB.
 <li> <b>2014/12/22 Version 1.0:</b> Initial public release.
 </ul>
 
+
 <h2>About</h2>
 
 <p>SimpleSSHD is built using parts from open source projects:
@@ -236,6 +289,12 @@ me:<br>
 <pre>git clone http://galexander.org/git/simplesshd.git</pre>
 
 <p>Direct APK download:
-<a href="SimpleSSHD-19.apk">SimpleSSHD-19.apk</a> - last version to target SDK 11, Android 3.0 Honeycomb.</p>
+<ul>
+<li><a href="SimpleSSHD-19.apk">SimpleSSHD-19.apk</a> - last version to target SDK 11, Android 3.0 Honeycomb.
+<li><a href="SimpleSSHD-23.apk">SimpleSSHD-23.apk</a>
+<li><a href="SimpleSSHD-24.apk">SimpleSSHD-24.apk</a>
+<li><a href="SimpleSSHD-26.apk">SimpleSSHD-26.apk</a>
+<li><a href="SimpleSSHD-27.apk">SimpleSSHD-27.apk</a>
+</ul></p>
 
 </body></html>

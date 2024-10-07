@@ -29,9 +29,9 @@ public class Prefs {
 	public static int get_port() {
 		int ret;
 		try {
-			ret = Integer.valueOf(pref.getString("port", "10000"));
+			ret = Integer.valueOf(pref.getString("port", "2222"));
 		} catch (Exception e) {
-			ret = 10000;
+			ret = 2222;
 		}
 		return ret;
 	}

@@ -2,12 +2,14 @@
 #include <string.h>
 #include <stdio.h>
 #include <jni.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <signal.h>
 #include <unistd.h>
 #include <fcntl.h>
 #include <ctype.h>
+#include <errno.h>
 
 const char *conf_path = "", *conf_shell = "", *conf_home = "", *conf_env = "",
 	*conf_lib = "";
@@ -116,6 +118,16 @@ from_java_string(jobject s)
 	return ret;
 }
 
+
+/* this makes sure that no previously-added atexit gets called (some users have
+ * an atexit registered by libGLESv2_adreno.so */
+static void
+null_atexit(void)
+{
+	_Exit(0);
+}
+
+
 JNIEXPORT jint JNICALL
 Java_org_galexander_sshd_SimpleSSHDService_start_1sshd(JNIEnv *env_,
 	jclass cl,
@@ -141,11 +153,17 @@ Java_org_galexander_sshd_SimpleSSHDService_start_1sshd(JNIEnv *env_,
 		char *argv[100] = { "sshd", NULL };
 		int argc = 1;
 		const char *logfn;
+		const char *logfn_old;
 		int logfd;
 		int retval;
 		int i;
 
+		atexit(null_atexit);
+
 		logfn = conf_path_file("dropbear.err");
+		logfn_old = conf_path_file("dropbear.err.old");
+		unlink(logfn_old);
+		rename(logfn, logfn_old);
 		unlink(logfn);
 		logfd = open(logfn, O_CREAT|O_WRONLY, 0666);
 		if (logfd != -1) {
@@ -194,4 +212,29 @@ Java_org_galexander_sshd_SimpleSSHDService_waitpid(JNIEnv *env_, jclass cl,
 		return WEXITSTATUS(status);
 	}
 	return 0;
+}
+
+
+JNIEXPORT jstring JNICALL
+Java_org_galexander_sshd_SimpleSSHDService_api_1mkfifo(JNIEnv *env_,
+	jobject jpath)
+{
+	if (!jni_init(env_)) {
+		return NULL;
+	}
+
+	const char *path = from_java_string(jpath);
+	char *buf = malloc(strlen(path)+100);
+	sprintf(buf, "%s/api", path);
+	if ((mkdir(buf, 0700) < 0) && (errno != EEXIST)) {
+		perror(buf);
+		return NULL;
+	}
+	sprintf(buf, "%s/api/cmd", path);
+	unlink(buf);
+	if (mkfifo(buf, 0666) < 0) {
+		perror(buf);
+		return NULL;
+	}
+	return (*env)->NewStringUTF(env, buf);
 }

@@ -9,15 +9,10 @@
 #endif
 
 /* Default hostkey paths - these can be specified on the command line */
-#ifndef DSS_PRIV_FILENAME
 #define DSS_PRIV_FILENAME conf_path_file("dropbear_dss_host_key")
-#endif
-#ifndef RSA_PRIV_FILENAME
 #define RSA_PRIV_FILENAME conf_path_file("dropbear_rsa_host_key")
-#endif
-#ifndef ECDSA_PRIV_FILENAME
 #define ECDSA_PRIV_FILENAME conf_path_file("dropbear_ecdsa_host_key")
-#endif
+#define ED25519_PRIV_FILENAME conf_path_file("dropbear_ed25519_host_key")
 
 /* Set NON_INETD_MODE if you require daemon functionality (ie Dropbear listens
  * on chosen ports and keeps accepting connections. This is the default.
@@ -83,7 +78,7 @@ much traffic. */
 #define DROPBEAR_3DES 1
 #define DROPBEAR_AES256 1
 /* Compiling in Blowfish will add ~6kB to runtime heap memory usage */
-#define DROPBEAR_BLOWFISH 1
+//#define DROPBEAR_BLOWFISH 1
 #define DROPBEAR_TWOFISH256 1
 #define DROPBEAR_TWOFISH128 1
 
@@ -299,3 +294,7 @@ be overridden at runtime with -I. 0 disables idle timeouts */
 #define DEFAULT_PATH "/sbin:/system/sbin:/system/bin:/system/xbin"
 
 #define DROPBEAR_SVR_MULTIUSER 0
+
+#define BUNDLED_LIBTOM 1
+#define DROPBEAR_ED25519 1
+#define DROPBEAR_ENABLE_GCM_MODE 1

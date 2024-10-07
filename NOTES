@@ -7,21 +7,11 @@ ant.properties symlink with an empty file.  You'll have to build a
 a debug apk on top of a release one, so you have to remove stock
 SimpleSSHD first before installing the debug build.
 
-Then follow these steps (roughly the "doit" script):
+Then follow the steps in the "doit" script (you will need to change the
+last line to indicate how you install the app on your phone or emulator).
 
-   ndk-build -j8 &&
-   mv libs/armeabi/scp libs/armeabi/libscp.so &&
-   mv libs/armeabi/sftp-server libs/armeabi/libsftp-server.so &&
-   mv libs/armeabi/rsync libs/armeabi/librsync.so &&
-   mv libs/armeabi/buffersu libs/armeabi/libbuffersu.so &&
-   mv libs/x86/scp libs/x86/libscp.so &&
-   mv libs/x86/sftp-server libs/x86/libsftp-server.so &&
-   mv libs/x86/rsync libs/x86/librsync.so &&
-   mv libs/x86/buffersu libs/x86/libbuffersu.so &&
-   ant debug
-
-The mv steps are very important, because ant will only package the
-necessary binaries if they have a .so extension (even though they are
+The mv steps in "doit" are very important, because ant will only package
+the necessary binaries if they have a .so extension (even though they are
 stand alone executables).
 
 
@@ -898,13 +888,819 @@ the manifest...
 allowBackup="false" took immediate effect and had no surprises...
 
 
+August 4, 2019.
+
+I finally got a dump from a user (Hammad), and it's quite distressing.
+The stack trace is roughly:
+   backtrace()
+   sigsegv_handler()
+   /system/bin/app_process64+0x2a90
+   __kernel_rt_sigreturn()
+   A5xContext::HwAddNop(unsigned int *, unsigned int)
+   EsxCmdMgr::IssuePendingIB1s(EsxFlushReason, int, int)
+   EsxCmdMgr::Flush(EsxFlushReason)
+   EsxContext::Destroy()
+   EglContext::DestroyEsxContext()
+   EglDisplay::MarkContextListForDestroy()
+   EglDisplay::Terminate(int)
+   EglDisplayList::Destroy()
+   EglDisplay::DestroyStaticListsMutexesAndTlsKeys()
+   EsxEntryDestruct()
+   /system/vendor/lib64/egl/libGLESv2_adreno.so+0x12780
+   [... cut off at 16 ...]
+
+So many questions!  I think app_process64 must be the actual C main() of
+a process, responsible for branching into all the android system
+libraries?  I imagine it's involved because it's somehow intercepted the
+SIGSEGV and re-dispatched it to my handler?  I don't see any way we could
+have branched into libGLESv2_adreno from userland, so the SIGSEGV must
+come from the UI thread, I guess?  Maybe this SIGSEGV is actually the
+sort of thing we'd get if we tried to call UI code from the non-UI
+thread??
+
+It looks like GLES is busy cleaning itself up, and it crashes.  Why's it
+crash?  Why's it trying to clean itself up?
+
+Hammad says there is no problem using sshd...I thought he meant that the
+re-start logic is working for him but his dropbear.err has multiple dumps
+in it!  The SIGSEGVs are apparently not killing the daemon.
+
+There are no timestamps on the dumps, but it looks like they're
+associated with activity anyways.  Each dump happens between "Disconnect
+received" and "sigchld".  Some of them have "server select out"
+interleaved into the dump, which I think is the result of Hammad running:
+   while true; do ssh phone 'exit'; done
+That is, it appears he starts a new connection the very instant the old
+connection ends.  So the new connection comes into the server process
+while the child process is in the act of dying.
+
+The thing is, I don't see how it could possibly be getting signals from
+the Java side of things, because it fork()s before setting up the signal
+handling.  It's not just running in a different thread, it should be a
+totally separate process.  I can test this but I don't think I'm wrong
+about that.
+
+So I guess just about the only thing that's really possible is that
+there's an atexit() which survives the fork() because it isn't followed
+up with an execve().  It's not caused by ARM, or even necessarily by
+Android 9...the reason it doesn't show up in the emulator is that the
+libGLES that registers the atexit() is vendor-supplied for specific
+hardware ("Adreno").
+
+So I need to figure out how to bypass the atexit() somehow, perhaps by
+calling _exit() directly?
+
+
+August 12, 2019.
+
+Kumaran Santhanam suggests START and STOP broadcast intents, which seems
+A number 1 to me!
+
+And a few people have written back to say the atexit bypass worked for
+their SIGSEGV - pfew!
+
+
+September 21, 2019.
+
+First, some user reports.
+
+Kumaran says the START/STOP broadcast intents work wwith Tasker on
+Android 7 but not on Android 9.  He also reports it works from the shell
+(am broadcast --user 0 -a org.galexander.sshd.START org.galexander.ssh)
+so I'm not sure what the difference is, and I'm not super inclined to
+install Tasker to find out.  I wonder if there is some sort of implicit
+distinction between sending a broadcast intent and sending a service
+intent that is negotiated differently at Android 9?
+
+Roman reports that it "works" on his Onyx Boox i68ML (eink, I think), but
+it doesn't refresh the log display so he can never see the
+one-time-password.  I think I just need to find a way to manually trigger
+a refresh of the eInk but I haven't found anything like that yet...just a
+bunch of people reporting that other apps (KOReader, CoolReader) stopped
+working on onyx boox at some point.  I do remember being somewhat
+surprised that the log view worked at all, so maybe there is something
+missing from my use of TextView and we just have been getting lucky...
+
+But while I was looking for a way to get the android emulator to emulate
+eink (no dice), I stumbled onto the Android TV emulation!  I haven't
+received one of these requests recently but they used to be a common
+occurrence, and I suspect people would really appreciate if SimpleSSHD
+was just available regularly through the app store on TV.
+
+With the emulator, I was able to sideload the app with adb, and then
+enable it under Settings -> Security & Permissions and then launch it
+with Settings -> Apps -> SimpleSSHD -> open.  Then it works, except
+there's no three-dots menu button, so no way to get to Settings.
+
+Anyways, there's a whole laundry list of things to do to get into the app
+store and to get shown in the regular launcher.
+
+...
+
+Luckily, even though the list of requirements is long, it is largely
+irrelevant or redundant, so I'm just about there.
+
+...
+
+On Android, they suggest you make a URL Intent and send it to the system
+browser.  But on Android TV, you make a WebView, I guess there is no
+stock Chrome.  It's easy enough.  The disconcerting part is I can't test
+it on my emulated phone or real phone because WebView.loadUrl() just
+defaults to sending to the system Chrome.  That's fine, though,
+apparently it's a known thing you can work around, but I really don't
+need to work around it, assuming Android properly defaults to WebView
+instead if Chrome isn't available.  *shrug*
+
+So I'm tagging the new version.
+
+...
+
+When I went to upload version 23, I found that there was a crash reported
+on version 22 with Android 9, two users, a Galaxy S9+ and a OnePlus5T.
+The crash looks like:
+
+   java.lang.RuntimeException:
+     at android.app.ActivityThread.performResumeActivity (ActivityThread.java:3992)
+     at android.app.ActivityThread.handleResumeActivity (ActivityThread.java:4024)
+     at android.app.servertransaction.ResumeActivityItem.execute (ResumeActivityItem.java:51)
+     at android.app.servertransaction.TransactionExecutor.executeLifecycleState (TransactionExecutor.java:145)
+     at android.app.servertransaction.TransactionExecutor.execute (TransactionExecutor.java:70)
+     at android.app.ActivityThread$H.handleMessage (ActivityThread.java:1926)
+     at android.os.Handler.dispatchMessage (Handler.java:106)
+     at android.os.Looper.loop (Looper.java:214)
+     at android.app.ActivityThread.main (ActivityThread.java:6990)
+     at java.lang.reflect.Method.invoke (Native Method)
+     at com.android.internal.os.RuntimeInit$MethodAndArgsCaller.run (RuntimeInit.java:493)
+     at com.android.internal.os.ZygoteInit.main (ZygoteInit.java:1445)
+   Caused by: java.lang.IllegalStateException:
+     at android.app.ContextImpl.startServiceCommon (ContextImpl.java:1666)
+     at android.app.ContextImpl.startService (ContextImpl.java:1611)
+     at android.content.ContextWrapper.startService (ContextWrapper.java:677)
+     at org.galexander.sshd.SimpleSSHD.onResume (SimpleSSHD.java:62)
+     at android.app.Instrumentation.callActivityOnResume (Instrumentation.java:1412)
+     at android.app.Activity.performResume (Activity.java:7611)
+     at android.app.ActivityThread.performResumeActivity (ActivityThread.java:3984)
+
+It's the startService() call for Start On Open.  So I tested that on my
+phone (Android 8), and on the emulator with Android 9 and 10, and I
+couldn't get it to happen.  Either it's upset that it isn't
+startForegroundService(), or maybe it somehow starts the service even
+after it's already been started and complains about that?  It seems like
+it must be intermittent or harmless, because one user has triggered it 6
+times on different days over the week.
+
+There's also a crash with version 19 on Android 9, and it only shows as
+far as:
+   android.app.ActivityThread.performLaunchActivity
+Which seems to me to maybe be the same spot?  Anyways, it didn't recur,
+and I'm not gonna be doing new updates to version 19 anyways, so,
+whatever.
+
+
+September 22, 2019.
+
+The crash on startService() in onResume() has already been verified to
+occur also at version 23, so I have to track that down.  I found this,
+which is likely to be the underlying problem:
+
+   https://stackoverflow.com/questions/52013545/android-9-0-not-allowed-to-start-service-app-is-in-background-after-onresume
+
+It looks like the user opens the app with start-on-open, it works, and
+then they let the phone fall asleep with SimpleSSHD on top, and some sort
+of shuffle kills the service, and then they wake the phone up, and then
+it tries to resume SimpleSSHD, which tries to re-start the service, which
+fails because the phone hasn't finished waking up yet so even the top
+activity isn't active yet, even though it's already in
+SimpleSSHD.onResume().  Apparently acknowledged as a bug in Android 9.
+
+I tried to synthesize this sequence on the emulator with x86 pie, and I
+had no luck.  I was able to get the service to die (by broadcasting STOP)
+while the emulator was "asleep", but then it woke up it didn't cause any
+trouble.  I suspect it takes a few coincidences to reliably trigger.
+
+Anyways, so what I'm doing is I'm having the startService() calls in
+SimpleSSHD go through the SimpleSSHDService.do_startService() wrapper, so
+that they become startForegroundService() calls as appropriate.  This may
+solve the problem on its own, if the user happens to have selected
+foreground.  But then I can also make this common path smarter...
+
+On another note, I stumbled onto something that says Android 9 limits
+implicit broadcasts (no explicit destination), and considers a broadcast
+to be implicit even if it does have an explicit destination if there is
+an "action string."  !!!  Not sure if that's something I can play with,
+but putting it on the list.
+
+
+October 7, 2019.
+
+Tom Davidson was having some problems with port proxy.  I guess he just
+wants client-side -L and -D to work, which they do work, so far as I
+know.  But I tested, and -R does not work!  My phone seems to have some
+sort of firewall, it hangs instead of saying connection denied.  So maybe
+-R isn't bypassing the firewall.  Another possibility is that dropbear
+simply doesn't support -R, but I kind of thought it did?
+
+
+January 10, 2020.
+
+I was here to add Fionn Behrens' request for dark mode support,
+especially for the Notification.  And I found, it's already on the list.
+There's a lot on the list.
+
+
+January 29, 2020.
+
+There's a cluster of reviews indicating problems with WinSCP:
+
+   Wojtek El Jan 9, 2020 at 8:52 AM
+   1 star
+   Worked great until latest update. Keeps loosing contection when
+   uploading file using sftp in WinSCP. Please do something about it then
+   I`ll change my rate. Android 5.1
+
+Sounds like the new receive window size breaks WinSCP??
+
+
+March 20, 2020.
+
+I happened to install wine today, so I decided to try WinSCP.  The newest
+version of WinSCP (5.17.2) doesn't work, it gets an "Invalid access to
+memory" error when connecting.  Don't know why, maybe it's wine or maybe
+it's WinSCP.  Version 5.16.7 (slightly older) gets the same error.
+Version 4.0.4 is way too old, and can't connect (doesn't know any modern
+ciphers).  Version 5.9.3 is just right, I guess.  It "works".  But then,
+using SFTP to upload a file around 1MB, it reproduces the reported error.
+WinSCP reports "Server sent command status 11".  It has a log facility,
+but it shows precious little information.  It seems to send about 512kB
+and then it says:
+
+. 2020-03-20 20:35:08.191 There are 197377 bytes remaining in the send buffer, need to send at least another 164609 bytes
+. 2020-03-20 20:35:08.191 Looking for network events
+. 2020-03-20 20:35:08.191 Detected network event
+. 2020-03-20 20:35:08.191 Enumerating network events for socket 536
+. 2020-03-20 20:35:08.191 Enumerated 1 network events making 1 cumulative events for socket 536
+. 2020-03-20 20:35:08.191 Handling network read event on socket 536 with error 0
+. 2020-03-20 20:35:08.191 Server sent command exit status 11
+. 2020-03-20 20:35:08.192 Selecting events 0 for socket 536
+. 2020-03-20 20:35:08.192 Disconnected: All channels closed
+. 2020-03-20 20:35:08.192 Connection was lost, asking what to do.
+. 2020-03-20 20:35:08.192 Asking user:
+. 2020-03-20 20:35:08.192 Connection has been unexpectedly closed. Server sent command exit status 11. ()
+
+Not sure there's any information there.  The SimpleSSHD log shows just a
+normal "Exited normally".  Does that mean sftp did an "exit(11)" ?  Was
+there a SIGSEGV?  Did WinSCP just eat itself for no reason?  I have not
+been very impressed with WinSCP (and there is already a user report that
+switching to FileZilla is the right remedy all around), but I would like
+to investigate before throwing in the towel.
+
+The file is created on the target with length 65536.
+
+Anyways, first thing to do is dick around with the setting that probably
+caused the problem.  This is the change:
+
+   #define DEFAULT_RECV_WINDOW 524288
+   #define RECV_MAX_PAYLOAD_LEN (524288+16384)
+
+The previous values were apparently
+
+   #define DEFAULT_RECV_WINDOW 24576
+   #define RECV_MAX_PAYLOAD_LEN 32768
+
+Combinations DEFAULT_RECV_WINDOW / RECV_MAX_PAYLOAD_LEN.
+512 kB / 512+128 kB    broken
+24 kB / 512+128 kB     broken
+24 kB / 32 kB          fixed
+512 kB / 32 kB         fixed
+512-32 kB / 512 kB     broken
+512-32 kB / 32 kB      fixed
+512-32 kB / 64 kB      fixed
+512-32 kB / 128 kB     fixed
+512-32 kB / 256 kB     fixed
+512-32 kB / 384 kB     broken
+
+It seems that WinSCP doesn't like RECV_MAX_PAYLOAD_LEN larger than 256kB.
+
+Domagoj, who first pointed this out to me, sent this link:
+
+   https://lab.nexedi.com/nexedi/slapos/commit/605e564b8f3008cdb48dbc6e82c956029469ff02
+
+There they say that the -W option allows a major improvement in speed,
+but in order to be compatible with OpenSSH the RECV_MAX_PAYLOAD_LEN must
+also be increased.  I only made RECV_MAX_PAYLOAD_LEN "somewhat" bigger
+than DEFAULT_RECV_WINDOW because that was how it was before...
+
+So I guess I need to stop poking around in the dark, and find out these
+things really do.
+
+DEFAULT_RECV_WINDOW becomes opts.recv_window, which newchannel() uses to
+pick the size of writebuf, and to set chan->recvwindow.
+
+RECV_MAX_PAYLOAD_LEN-9 becomes RECV_MAX_CHANNEL_DATA_LEN, then goes into
+chan->recvmaxpacket.
+
+Both values are sent across by send_msg_channel_open_init()
+(SSH_MSG_CHANNEL_OPEN), and also by send_msg_channel_open_confirmation()
+(SSH_MSG_CHANNEL_OPEN_CONFIRMATION).
+
+It looks like chan->recvwindow is decremented as things come into the
+buffer, and incremented as they leave it.  recvmaxpacket doesn't seem to
+do anything other than get sent across.
+
+RFC4254 SSH Connection Protocol defines these SSH_MSG_CHANNEL_OPEN
+packets.  DEFAULT_RECV_WINDOW is called 'initial window size' and
+"specifies how many bytes of channel data can be sent without adjusting
+the window".  RECV_MAX_PAYLOAD_LEN is called 'maximum packet size' and
+"specifies the maximum size of an individual data packet that can be sent
+to the sender."
+
+So, really, I think that there is no reason for RECV_MAX_PAYLOAD_LEN to
+be bigger than DEFAULT_RECV_WINDOW.  I think DEFAULT_RECV_WINDOW was just
+unreasonably small in the Dropbear defaults, and RECV_MAX_PAYLOAD_LEN
+happened to be the smallest that was permitted by compatibility.
+
+A bigger DEFAULT_RECV_WINDOW would allow greater saturation of the pipe
+without worrying about the latency of ACKs.  A bigger
+RECV_MAX_PAYLOAD_LEN just saves the overhead of having more packet
+headers, I think.  So I think in principle, DEFAULT_RECV_WINDOW will have
+the bigger effect on effective bandwidth, so long as RECV_MAX_PAYLOAD_LEN
+is at least "decently large."
+
+So now I'm trying combinations to see performance and compatibility
+OpenSSH (sending a 16.4MB file across ssh 'cat > /dev/null', wall time):
+
+  512-32 kB / 384 kB     works 3.1s 3.4s 3.1s
+  512 kB / 32 kB         works 2.4s 2.1s 2.0s
+  1024 kB / 32 kB        works 2.2s 2.0s 2.2s
+  24 kB / 32 kB          works 10.4s 10.3s 8.9s
+  512 kB / 256 kB        works 2.3s 2.3s 2.1s
+  512 kB / 128 kB        works 2.9s 2.1s 2.1s
+  512 kB / 512 kB        works 2.4s 2.1s 2.2s
+  256 kB / 256 kB        works 3.4s 4.5s 2.4s 4.7s 2.0s 2.1s
+  128 kB / 128 kB        works 2.5s 2.3s 2.3s
+  64 kB / 64 kB          works 3.8s 3.1s 3.2s
+  32 kB / 256 kB         works 8.9s 9.1s 8.0s
+  64 kB / 256 kB         works 3.9s 5.6s 3.1s
+  512 kB / 128 kB(again) works 2.3s 1.9s 2.0s
+
+Obviously a lot of variation from noise on the wireless network, though I
+think the larger receive window actually helps erase some of that
+variability because it doesn't have to wait for the ACK whether the ACK
+is delayed by congestion or not.
+
+So, rather frustratingly, I've (somewhat) reproduced the performance
+motivation for changing DEFAULT_RECV_WINDOW, but I haven't found the
+compatibility motivation for changing RECV_MAX_PAYLOAD_LEN.  So I'm still
+stabbing in the dark.  I suspect that the compatibility problem was
+actually a since-fixed bug in OpenSSH, since ideally it should honor the
+packet length limit regardless of the window size?  Or!  The report is
+actually that a packet of length 32777 was sent...  That's 32768+9, maybe
+the -9 in the definition of RECV_MAX_CHANNEL_DATA_LEN is relatively
+modern in Dropbear??  I bet that's it!  It was a phantom all along that
+was forcing RECV_MAX_PAYLOAD_LEN to grow.
+
+Anyways, it looks like DEFAULT_RECV_WINDOW really just needs to be bigger
+than 128kB, and RECV_MAX_PAYLOAD_LEN hardly matters at all.  So I'm going
+with 512kB / 128kB.  And I confirm, that does work with WinSCP.
+
+
+December 28, 2020.
+
+Dropbear 2020.79 finally adds support for ed25519, which is a frequent
+comment I've received from users because some openssh configuration
+generates these keys by default I guess?  Anyways, I'm finally updating
+it to 2020.81.
+
+The update went about as you would expect and seems to be successful.  I
+just onnected to my phone using an ed25519 user key for authentication --
+it works!
+
+So that's about time for a new release.  People have apparently been
+waiting since March for the WinSCP fix, though I stopped getting emails
+about it and that's why I haven't bothered with it.
+
+The only thing pending is updating to the SDK needed for the play store.
+Supposedly they require 29 today and will require 30 in aug 2021.  I
+happen to have already used 30 for TunerTime, so I know I've got the SDK
+version 30 installed all the way, so that's what I'm gonna aim for I
+guess.
+
+It's currently at 28, so that's not a huge step...
+
+Looking at the list of things to expect when updating to SDK 30, the only
+one that looks relevant is "scoped storage enforcement", which is just
+the /sdcard nightmare that we've known all along is getting worse.
+
+
+January 17, 2021.
+
+I have had a little luck today...  I tested a little with
+requestLegacyExternalStorage and API 29, on an emulated Android 11, and
+it seems to work.  Users will likely need to use the new "Enable /sdcard"
+menu option.
+
+Also, it turns out to be trivial to honor the MY_PACKAGE_REPLACED
+(package upgrade) intent using the same receiver as BOOT_COMPLETED, which
+is going to be great for people going forward.
+
+...
+
+I have been banging on the problem people have reported with
+"Non-matching signing type." with older versions of OpenSSH.  I've been
+told it's the OpenSSH 7.2p2 that ships stock with Ubuntu 16.04 and Mint
+18.3.  Rich D did the legwork and found it is probably
+https://svn.dd-wrt.com/ticket/7179
+
+There is a new check for expect_sigtype != sigtype in dropbear 2020.81.
+The fix the dd-wrt guys came up with is simply to disable that check if
+expect_sigtype == DROPBEAR_SIGNATURE_RSA_SHA256.  I don't like simply
+disabling the check, because I don't know what the role of the check is.
+I don't want to be a blind fool.
+
+It sounds like there's one protocol string "ssh-rsa" that can also be
+used to represent "rsa-sha2-256".  I did not bother to trace through how
+that string gets converted into these numeric values.  But at the bottom
+of http://lists.openwrt.org/pipermail/openwrt-devel/2020-July/030200.html
+it says the actual signature is DROPBEAR_SIGNATURE_RSA_SHA1.  This makes
+sense from grepping around the dropbear source:
+
+   {"rsa-sha2-256", DROPBEAR_SIGNATURE_RSA_SHA256, NULL, 1, NULL},
+   {"ssh-rsa", DROPBEAR_SIGNATURE_RSA_SHA1, NULL, 1, NULL},
+   DROPBEAR_SIGNATURE_RSA_SHA1 = 100, /* ssh-rsa signature (sha1) */
+   DROPBEAR_SIGNATURE_RSA_SHA256 = 101, /* rsa-sha2-256 signature. has a ssh-rsa key */
+
+So confusion between those two sounds likely to me.
+
+...
+
+Triaged the crashes again.  crash.20200109 is the only one that bothers
+me.  It will probably continue at a low incidence until I figure out
+what's causing it.
+
+...
+
+Oh and!  There is one more interesting problem, reported by Brad R and
+Andreas S.  Maybe it's different problems??  The thing in common is that
+they aren't seeing anything displayed from the dropbear.err file, and
+then they aren't able to connect.  But Brad R says he used netstat and it
+really is listening on the port, and he sent me a ssh -vvv report that
+seems to show the server dropping connection after the client has
+received an SSH2_MSG_KEXINIT, while waiting for a response to
+SSH_MSG_KEXDH_INIT. So I guess the server must be running?
+
+Andreas S concluded that the server isn't running, due to the lack of
+displayed dropbear.err output.  That made sense to me at first, but now I
+think maybe his server is also running, just not working??
+
+So one possible explanation for both of them is that they have put their
+dropbear directory under /sdcard, and the external storage charley
+foxtrot has made them unable to access their server's host key at the
+same time as making them unable to diagnose the problem (unable to read
+dropbear.err).  I haven't yet asked either of them if they have
+configured it to use /sdcard.
+
+But I'm worried there's something more fundamental going on.  We'll see
+if they report any progress with version 27 that I just released.
+
+
+January 18, 2021.
+
+Andreas S and Brad R wrote back to say their problem is fixed.  I suspect
+their dropbear.err was somehow hidden by the external storage problem.
+
+
+May 13, 2022.
+
+Just got an astonishing email from an anonymizer service.  Hopefully they
+don't mind me pasting the contents here, because I don't have time to
+look into it at the moment.  They suggest a resolution for
+crash.20220424:
+
+   Hello,
+
+   I see recent git change for your simplesshd app for
+   RemoteServiceException. I worked on fixing that in my own app before
+   and some devices have the issue, some don't. Its with the foreground
+   notification use that people have been using and is something Google
+   hasn't fixed.
+
+   You can work around it by using WorkManager and Worker. You don't need
+   to use the foreground stuff that way. I switched over my own apps that
+   way successfully and no more problems from that situation.
+
+   You can lookup "RemoteServiceException workmanager" and a stack
+   overflow page suggests this which is the only way I found to solve it.
+
+   I see you will also need to include the Android 11+ storage usage of
+   asking the user to select a folder for access using new
+   Intent(Intent.ACTION_OPEN_DOCUMENT_TREE), getting repeat URI use of
+   the path &amp; files from DocumentFile via
+   DocumentFile.fromTreeUri(context, uri) for reading and writing to go
+   with it for all the public storage use.
+
+   Hope that helps.
+
+   I'm just sending from a temporary email address. Don't reply as I
+   won't get it. I'm not interested in back and forth :-)
+
+I have faith that's a useful breadcrumb for RemoteServiceException.  I'm
+not sure what the ACTION_OPEN_DOCUMENT_TREE part has to do with...I've
+looked into that before and was unable to figure out a way to use that to
+directly access the filesystem in a sensible fashion but maybe there is a
+way to get a real unix path access from it, or maybe it has improved
+somewhat since the last time I looked at it.  I probably won't be able to
+make sense of that part until I am stuck with a phone that limits me and
+I need to actually work through it.  Maybe when I set up an Android 12
+emulator I will see what's up.
+
+
+August 2, 2022.
+
+Got a new phone, with Android 11.  SimpleSSHD seems to be a lot more
+thoroughly unscheduled if it is in the background...I have to bring it to
+the foreground manually to accept a connection, and if it's not a bulk
+rsync then I need to stay in the foreground to even continue the existing
+connection.
+
+But just looking through Settings -> Addition settings -> Developer
+options, I noticed "Suspend execution for cached apps".  I disabled it,
+and now sshd is responsive all the time.  So that's something worth
+sharing with the user.  But also, it might not even be necessary for the
+user to do it:
+
+   As a workaround, if an app has a process that needs to perform
+   activities while cached, change the process status to non-cached (such
+   as Bound ForeGround Service (BFGS) or foreground) before the process
+   needs to do any work to allow the app to remain active.
+
+I don't know what that means, but it seems like an indication that there
+is perhaps some new / advanced "foreground service" mode.
+
+
+August 22, 2022.
+
+It's freezing it again today.  Here is it freezing it while it's executing
+   $ while true; do date; sleep 1; date
+
+ 08-02 22:17:17.534 1926 4196 I OplusHansManager : freeze uid: 10278
+   org.galexander.sshd pids: [6026, 5953, 5952, 5948, 5946, 3666, 3665,
+   3614, 3568] scene: LcdOn
+ 08-02 22:17:19.540 8813 23721 D IHansComunication: HANS
+   sendMessageToKernel: threadId = 540790373568, netLinkSetup = 1, type =
+   FROZEN_TRANS, targetUid = 10278, pkgCmd = PKG_CMD_MAX
+ 08-02 22:19:27.124 1926 4197 I OplusHansManager : unfreeze uid: 10278
+   org.galexander.sshd pids: [6026, 5953, 5952, 5948, 5946, 3666, 3665,
+   3614, 3568] reason: AsyncBinder scene: LcdOn
+ 08-02 22:19:27.125 1926 4196 I OplusHansManager : uid=10278,
+   pkg=org.galexander.sshd, transition from Frozen to Middle,
+   reason=AsyncBinder
+ 08-02 22:19:27.128 1926 4197 I OplusHansManager : unfreeze uid: 10320
+   org.galexander.soft84 pids: [31948] reason: AsyncBinder scene: LcdOn
+ 08-02 22:19:27.129 1926 4196 I OplusHansManager : uid=10320,
+   pkg=org.galexander.soft84, transition from Frozen to Middle,
+   reason=AsyncBinder
+ 08-02 22:19:27.130 1926 4197 I OplusHansManager : unfreeze uid: 10317
+   org.galexander.bluntmp3 pids: [22587] reason: AsyncBinder scene: LcdOn
+ 08-02 22:19:27.131 1926 4196 I OplusHansManager : uid=10317,
+   pkg=org.galexander.bluntmp3, transition from Frozen to Middle,
+   reason=AsyncBinder
+ 08-02 22:19:37.147 1926 4196 I OplusHansManager : freeze uid: 10278
+   org.galexander.sshd pids: [6195, 5953, 5952, 5948, 5946, 3666, 3665,
+   3614, 3568] scene: LcdOn
+ 08-02 22:19:37.157 1926 4196 I OplusHansManager : freeze uid: 10320
+   org.galexander.soft84 pids: [31948] scene: LcdOn
+ 08-02 22:19:37.163 1926 4196 I OplusHansManager : freeze uid: 10317
+   org.galexander.bluntmp3 pids: [22587] scene: LcdOn
+ 08-02 22:19:39.155 8813 23721 D IHansComunication: HANS
+   sendMessageToKernel: threadId = 540790373568, netLinkSetup = 1, type =
+   FROZEN_TRANS, targetUid = 10278, pkgCmd = PKG_CMD_MAX
+ 08-02 22:19:39.161 8813 8835 D IHansComunication: HANS
+   sendMessageToKernel: threadId = 540790373568, netLinkSetup = 1, type =
+   FROZEN_TRANS, targetUid = 10320, pkgCmd = PKG_CMD_MAX
+ 08-02 22:19:39.165 8813 8835 D IHansComunication: HANS
+   sendMessageToKernel: threadId = 540790373568, netLinkSetup = 1, type =
+   FROZEN_TRANS, targetUid = 10317, pkgCmd = PKG_CMD_MAX
+
+So it decides to freeze it after a while, and then unfreezes it
+"reason=AsyncBinder" every now and then for about 10 seconds at a time.
+
+The two processes involved:
+   system         1926    841 13580368 523424 0           0 S system_server
+   system         8813      1 2182528   1084 0            0 S hans
+
+I'm trying to see if system_server, at least, might be part of their open
+source package.  It doesn't look like it.  I started downloading their
+repo but it's almost entirely AOSP, and the parts they provide (at least
+/usr/src/oneplus/android_system_core/) don't seem to be very useful.
+
+I made a copy of its /system in ~/mole/system, and it looks like the
+following .jar files in framework/ all reference Hans something:
+   ext.jar
+   framework.jar
+   oplus-framework.jar
+   oplus-internal-services.jar
+   oplus-services.jar
+   service-jobscheduler.jar
+   services.jar
+
+So that's a lead for now.
+
+
+August 6, 2022.
+
+I noticed that for the past couple days, write access to /sdcard has gone
+away!  I felt like I was being gaslit, because I was sure it had worked.
+Turns out, I had accidentally disabled write access in SimpleSSHD while I
+was working on NGN!  Oh!  The human capacity for error.  So I am still
+able to write into /sdcard on a decently modern phone and that is a huge
+reassurance about the possible future of SimpleSSHD on Android!
+
+Anyways, when I restored write access, I re-installed the app and got to
+see something which might substitute for start-on-boot failing:
+
+ 08-06 17:45:17.415 4694 4694 I NotificationBackend: onReceive package
+   intent= Intent { act=android.intent.action.PACKAGE_REPLACED
+   dat=package:org.galexander.sshd flg=0x4000010 (has extras) }
+  ...
+ 08-06 17:45:17.834 1878 2105 W BroadcastQueue: Background execution not
+   allowed: receiving Intent { act=android.intent.action.PACKAGE_ADDED
+   dat=package:org.galexander.sshd flg=0x4000010 (has extras) } to
+   com.google.android.packageinstaller/com.android.packageinstaller.Packa
+   ge InstalledReceiver
+  ...
+ 08-06 17:45:17.880 1878 2105 W BroadcastQueue: Background execution not
+   allowed: receiving Intent { act=android.intent.action.PACKAGE_REPLACED
+   dat=package:org.galexander.sshd flg=0x4000010 (has extras) } to
+   com.google.android.gms/.gass.chimera.PackageChangeBroadcastReceiver
+
+It's probably not interesting but I was surprised to see that each of the
+BroadcastQueue errors repeated 5x in the log, as if it was expected to
+succeed.
+
+I was expecting the problem to be that the broadcast receiver was
+triggering but wasn't allowed to spawn a foreground service or something
+like that, but it looks like the receiver is rejected much earlier.
+stackoverflow confirms that people are getting the same problem with
+BOOT_COMPLETED, and that it doesn't call BroadcastReceiver.onReceive() at
+all!
+
+There's a suggestion that it needs to register the receivers using
+context.registerReceiver(new BroadcastReceiver(...), new IntentFilter(...))
+That seems crazy.
+
+It is apparently this:
+
+https://developer.android.com/about/versions/oreo/background#broadcasts
+
+Which I thought I already dealt with in order to receive BOOT_RECEIVER in
+the first place (since I've already been using it under Oreo, version
+26), but really I think what I'm running into is just that it's no longer
+"grandfathered in" if you declare minSdkVersion 17.
+
+Anyways, the google doc supports the hack of registering the receivers in
+code instead of using AndroidManifest, which is just crazy.
+
+OTOH, MY_PACKAGE_REPLACED is specifically supposed to be allowed in the
+new regime (it is not "implicit" because it has an explicit target)!  And
+there's no reference to MY_PACKAGE_REPLACED in the logcat.
+ACTION_MY_PACKAGE_REPLACED has been part of android.content.intent since
+API 12.
+
+Maybe it's upset seeing both MY_PACKAGE_REPLACE and BOOT_COMPLETED in the
+same broadcast receiver in the XML??
+
+
+August 25, 2022.
+
+Reimer Prochnow sent a patch to use the new Android 11 permissions!  They
+are disappointed that it does not seem to allow more access than before,
+but it will nonetheless probably be necessary when I update to the new
+sdk.
+
+Leaving it in reimer_prochnow-manage_extensions.patch until then.
+
+
+September 4, 2022.
+
+I want to resolve the two big problems for me since Android 11.
+
+The resource starvation is bad.  It is about 50/50 on completing my
+morning rsync, and unfortunately it's streaky so I will go weeks without
+a successful backup, I guess.  And interactively, it seems to get about
+2s of execution out of every 5 minutes, even if the phone is extremely
+active in another app.  It is definitely freezing it, not merely failing
+to keep the CPU hot.  The only way I can think to make progress on this
+is to look in the Android framework and try to figure out what the actual
+heuristic is for freezing.  Or trial and error with dumb things like wake
+locks and so on.  But that's not what they're for!  Ugh.
+
+Oh, I found https://dontkillmyapp.com/oneplus, which led me to some
+stabbing around in the UI.  I found and enabled hidden app settings for
+"auto launch" (which might solve start-on-boot), and "never optimize
+battery", and in the task switcher long-pressed on SimpleSSHD then
+"lock".  And that seems to have done it!  It only starves for resources
+if the phone is asleep!  Well, maybe.  I will have to wait and see.
+
+I can't tell how it's really working, but after about 30 seconds of
+   while true; do date; sleep 1; date
+it stops, but then it immediately resumes the moment I hit enter on my
+terminal!  I'm having a hard time imagining the heuristic it uses to
+detect that event.
+
+Anyways, too bad that's a OnePlus-specific hack that won't help anyone else.
+But I should probably add dontkillmyapp.com to the doc, I guess.
+
+
+The other problem is the inability to trigger an intent from the shell,
+which is single-handedly responsible for me needing a cable just to
+upgrade my own apps.  "am" used to allow this, but it now says (on
+stderr):
+
+   java.lang.SecurityException: Permission Denial:
+   package=com.android.shell does not belong to uid=10278
+
+I googled that and found confirmation of the problem, but no reported
+work-around.  It doesn't matter what I put as --user: none, --user 0,
+--user 278, --user 10278, all the same result.  --user -1 gives a
+different error "Error: Can't start service with user 'all'".  I did find
+a report that "am start-foreground-service" still works but I'm shrugging
+at it.  It has been becoming harder to launch "am" over the years and if
+this isn't when the camel broke, then I think I'd rather not know.
+
+FWIW, the --user 0 one works under 'adb shell'.  Of course.
+
+I want to take the first timid step towards the future nuclear option.  I
+want to make a way for my unix environment to communicate with the java
+side of SimpleSSHD, so that it can launder requests as if they are coming
+from Java.
+
+It seems like something on the order of a named pipe, AF_UNIX socket, or
+a TCP/IP socket is indicated.  The TCP/IP socket could be plausibly
+secure by providing an authentication string in a $SIMPLESSHD_TOKEN env
+var that would authenticate it?
+
+
+And a third problem!  I keep losing the ability to write to /sdcard.
+The upshot is, this time I got it back simply by doing
+"... -> Enable /sdcard" again.  Why does it lose that?  In settings ->
+apps -> SimpleSSHD -> Permissions it says "Allowed Storage All Files",
+but it also says, at the bottom, in small print:
+
+   To protect your data, if the app is unused for a few months, the
+   following permissions will be removed: Storage
+
+Well it hasn't been a few months but it does very much seem like someone
+is removing or degrading the storage permission on some sort of schedule.
+Sigh.
+
+
+September 5, 2022.
+
+The OnePlus 'auto-launch' setting seems to have fixed both start-on-boot
+and start-after-apk-upgrade!  Hooray!
+
+
+XXX - Hammad asks for 'quick settings tile' to turn it on and off
+XXX - Andinus asks for 'Stop' to kill existing connections
+XXX - Nazar asks for holding a screen wake lock, i guess we could do it just while the app is open
+
+XXX - each time it starts, mkdir apiXX (if not present), fill in apiXX/ss_api (if not present), ln -sf apiXX api (overwriting if different), fork a thread in java that listens on 127.0.0.1:port, set $SS_TOKEN, $SS_PORTNO
+XXX - make api for start http intent
+XXX - make api for start apk install intent?
+
+XXX - try MANAGE_EXTERNAL_STORAGE permission -> ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION intent action, will that help??
+
+XXX - should probably add dontkillmyapp.com to the doc
+XXX - why is it 100% starved of foreground service cpu time, unless it happens to have been running when i switched away from the app
+XXX - why won't it start on boot?
+
+
+XXX - message about can't do background service on oreo should say oreo or later
+
+XXX - for Jose Miguel, script to run when user clicks 'start' or even when IP changes?  to like use curl to notify about a dynamic IP..
+
+XXX - update rsync version for Michael H
+
+XXX - --remove-source-files rsync deleting doesn't work?  is unlink() failing or is it trying something else first that fails?
+
+XXX - see if i can reproduce android 11 problem with executing files in app-private
+XXX - see if /data/user_de/0/org.galexander.sshd bypasses it on the emulator??
+XXX - try busybox on android TV again, try putting the binary in "native libs" and sharing it from there
+XXX - use linker hack instead of execve?  supposedly you can "/lib/ld-linux.so.2 /bin/echo"
+
+XXX - crash.20200109
+XXX - on android 6 (duckling moto g2), the notification is white-on-white?
+XXX - test Settings and Notifications colors in Pie (or Quiche?) "dark mode" for Alexander Chobot, and for Fionn Behrens (https://developer.android.com/guide/topics/ui/look-and-feel/darktheme)
+XXX - if the unlink(authorized_keys) fails, or if the open() fails for permission reasons, generate a Toast for the user. (confirmed that restorecon -F authorized_keys works)
+XXX - why doesn't "ssh -R 2223:192.168.1.254:80 mouse" work?
+
+XXX - when i am forced to upgrade to SDK 30, request MANAGE_EXTERNAL_STORAGE permission
+XXX - Vitalii suggests giving an error message for unrecognized key types (ed25519) that are encountered in authorized_keys, so the user doesn't have to stab in the dark
+XXX - ability to dynamically request <uses-permission-sdk-23 android:name="android.permission.SEND_SMS" /> (and if that's dynamic, could we make the install app permission also dynamic??)
+
+XXX - figure out how to force a screen refresh on eink devices (onyx boox) when the password is displayed (Roman)
+XXX - Tasker on Android 9 can't trigger the new START/STOP intents? (Kumaran)
 
 --- new release
-
-XXX - see if settings looks better with SDK26, if not, hack it so that the ones with strings have their states shown
-
-XXX - ed25519?
-
-XXX - try /data/data/com.termux/files/usr/bin/zsh as login shell
 
 XXX - libiconv? HAVE_ICONV_H etc

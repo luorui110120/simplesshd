@@ -4,8 +4,8 @@ def keyprops=new Properties()
 keyprops.load(new FileInputStream(rootProject.file("keystore.properties")))
 
 android {
-    compileSdkVersion 28
-    buildToolsVersion "28.0.3"
+    compileSdkVersion 30
+    buildToolsVersion "30.0.2"
 
     sourceSets {
 	main {
@@ -19,18 +19,26 @@ android {
 //	    keyPassword keyprops['keyPassword']
 //	    storeFile file(keyprops['storeFile'])
 //	    storePassword keyprops['storePassword']
+        storeFile file("$rootDir/keystore/xposed.jks")
+        storePassword "123456"
+        keyAlias "release"
+        keyPassword "123456"
+        v2SigningEnabled false
 	}
     }
 
     defaultConfig {
         applicationId "org.galexander.sshd"
-        minSdkVersion 16
-        targetSdkVersion 28
+        minSdkVersion 17
+        targetSdkVersion 30
+
+        versionCode 27
+        versionName "27"
     }
 
     buildTypes {
-        debug{}
         release {
+	    signingConfig signingConfigs.release
             minifyEnabled false
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.txt'
         }
@@ -38,4 +46,5 @@ android {
 }
 dependencies {
     implementation 'androidx.legacy:legacy-support-v4:1.0.0'
+    implementation 'androidx.leanback:leanback:1.0.0'
 }

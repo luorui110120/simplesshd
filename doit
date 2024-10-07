@@ -8,13 +8,13 @@ instlib() {
 	done
 }
 
-dropbear/ifndef_wrapper.sh < dropbear/default_options.h > dropbear/default_options_guard.h &&
-~//Library/android/sdk/ndk-bundle/ndk-build -j8 &&
+[ dropbear/default_options.h -nt dropbear/default_options_guard.h ] && dropbear/ifndef_wrapper.sh < dropbear/default_options.h > dropbear/default_options_guard.h
+$NDK/ndk-build -j8 &&
 mkdir -p app/src/main/lib/armeabi-v7a &&
 instlib scp libscp.so &&
 instlib sftp-server libsftp-server.so &&
 instlib rsync librsync.so &&
 instlib buffersu libbuffersu.so &&
 instlib libsimplesshd-jni.so "" &&
-./gradlew assembleRelease &&
-andinst app/build/outputs/apk/release/app-release.apk
+./gradlew assembleRelease
+#andinst app/build/outputs/apk/release/app-release.apk
