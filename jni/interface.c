@@ -25,7 +25,7 @@ conf_path_file(const char *fn)
 }
 
 
-static JNIEnv *env;
+static JNIEnv *g_env;
 static jclass cl_string;
 static jclass cl_simplesshdservice;
 
@@ -34,18 +34,18 @@ extern int dropbear_main(int argc, char **argv);
 static int
 jni_init(JNIEnv *env_)
 {
-	env = env_;
+	g_env = env_;
 #define CLASS(var, id) \
-	cl_##var = (*env)->FindClass(env, id); \
+	cl_##var = (*g_env)->FindClass(g_env, id); \
 	if (!cl_##var) return 0;
 #define METHOD(var, mycl, id, sig) \
-	mid_##var = (*env)->GetMethodID(env, cl_##mycl, id, sig); \
+	mid_##var = (*g_env)->GetMethodID(g_env, cl_##mycl, id, sig); \
 	if (!mid_##var) return 0;
 #define FIELD(var, mycl, id, sig) \
-	fid_##var = (*env)->GetFieldID(env, cl_##mycl, id, sig); \
+	fid_##var = (*g_env)->GetFieldID(g_env, cl_##mycl, id, sig); \
 	if (!fid_##var) return 0;
 #define STFIELD(var, mycl, id, sig) \
-	fid_##var = (*env)->GetStaticFieldID(env, cl_##mycl, id, sig); \
+	fid_##var = (*g_env)->GetStaticFieldID(g_env, cl_##mycl, id, sig); \
 	if (!fid_##var) return 0;
 
 	CLASS(string, "java/lang/String")
@@ -103,7 +103,7 @@ split_cmd(const char *in, char **argv, int max_argc)
 }
 
 static const char *
-from_java_string(jobject s)
+from_java_string(JNIEnv *env, jobject s)
 {
 	const char *ret, *t;
 	if (!s) {
@@ -140,13 +140,13 @@ Java_org_galexander_sshd_SimpleSSHDService_start_1sshd(JNIEnv *env_,
 	if (!jni_init(env_)) {
 		return 0;
 	}
-	conf_path = from_java_string(jpath);
-	conf_shell = from_java_string(jshell);
-	conf_home = from_java_string(jhome);
-	extra = from_java_string(jextra);
+	conf_path = from_java_string(env_,jpath);
+	conf_shell = from_java_string(env_,jshell);
+	conf_home = from_java_string(env_,jhome);
+	extra = from_java_string(env_,jextra);
 	conf_rsyncbuffer = rsyncbuffer;
-	conf_env = from_java_string(jenv);
-	conf_lib = from_java_string(jlib);
+	conf_env = from_java_string(env_,jenv);
+	conf_lib = from_java_string(env_,jlib);
 
 	pid = fork();
 	if (pid == 0) {
@@ -216,14 +216,14 @@ Java_org_galexander_sshd_SimpleSSHDService_waitpid(JNIEnv *env_, jclass cl,
 
 
 JNIEXPORT jstring JNICALL
-Java_org_galexander_sshd_SimpleSSHDService_api_1mkfifo(JNIEnv *env_,
-	jobject jpath)
+Java_org_galexander_sshd_SimpleSSHDService_api_1mkfifo(JNIEnv *env_,jclass cl,
+	jstring jpath)
 {
 	if (!jni_init(env_)) {
 		return NULL;
 	}
 
-	const char *path = from_java_string(jpath);
+	const char *path = from_java_string(env_,jpath);
 	char *buf = malloc(strlen(path)+100);
 	sprintf(buf, "%s/api", path);
 	if ((mkdir(buf, 0700) < 0) && (errno != EEXIST)) {
@@ -236,5 +236,5 @@ Java_org_galexander_sshd_SimpleSSHDService_api_1mkfifo(JNIEnv *env_,
 		perror(buf);
 		return NULL;
 	}
-	return (*env)->NewStringUTF(env, buf);
+	return (*g_env)->NewStringUTF(g_env, buf);
 }

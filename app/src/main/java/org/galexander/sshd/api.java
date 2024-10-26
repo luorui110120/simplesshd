@@ -18,10 +18,10 @@ public class api {
 		/* assumes JNI api_mkfifo() has already completed */
 	public static void start(final Context ctx, final String fn) {
 		if (fn == null) return;
-		if (curr_thread.get() != null) return;
+		if (curr_thread != null && curr_thread.get() != null) return;
 		Thread t = new Thread() { public void run() {
 						thread_main(ctx, fn); } };
-		if (curr_thread.compareAndSet(null, t)) {
+		if (curr_thread != null && curr_thread.compareAndSet(null, t)) {
 			t.start();
 		}
 	}

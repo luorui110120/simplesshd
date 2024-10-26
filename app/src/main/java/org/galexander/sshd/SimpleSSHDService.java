@@ -14,6 +14,9 @@ import android.os.IBinder;
 import android.widget.RemoteViews;
 import android.widget.Toast;
 import androidx.core.app.NotificationCompat;
+
+import org.galexander.util.LogUtils;
+
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.FileReader;
@@ -217,6 +220,7 @@ public class SimpleSSHDService extends Service {
 	}
 
 	public static void do_startService(Context ctx, boolean stop) {
+		//LogUtils.e("app_private:" + SimpleSSHD.app_private);
 		if (!stop) api.start(ctx, api_mkfifo(SimpleSSHD.app_private));
 		Intent i = new Intent(ctx, SimpleSSHDService.class);
 		if (stop) {
